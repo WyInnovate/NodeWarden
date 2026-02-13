@@ -27,12 +27,6 @@ export async function handleRegister(request: Request, env: Env): Promise<Respon
     return errorResponse(message, 400);
   }
 
-  // Check if already registered
-  const isRegistered = await storage.isRegistered();
-  if (isRegistered) {
-    return errorResponse('Registration is closed', 403);
-  }
-
   let body: {
     email?: string;
     name?: string;
@@ -88,7 +82,11 @@ export async function handleRegister(request: Request, env: Env): Promise<Respon
     updatedAt: new Date().toISOString(),
   };
 
-  await storage.saveUser(user);
+  const created = await storage.createFirstUser(user);
+  if (!created) {
+    return errorResponse('Registration is closed', 403);
+  }
+
   await storage.setRegistered();
 
   return jsonResponse({ success: true }, 200);
@@ -200,6 +198,7 @@ export async function handleGetRevisionDate(request: Request, env: Env, userId: 
 // POST /api/accounts/verify-password
 export async function handleVerifyPassword(request: Request, env: Env, userId: string): Promise<Response> {
   const storage = new StorageService(env.DB);
+  const auth = new AuthService(env);
   const user = await storage.getUserById(userId);
 
   if (!user) {
@@ -217,7 +216,8 @@ export async function handleVerifyPassword(request: Request, env: Env, userId: s
     return errorResponse('masterPasswordHash is required', 400);
   }
 
-  if (body.masterPasswordHash !== user.masterPasswordHash) {
+  const valid = await auth.verifyPassword(body.masterPasswordHash, user.masterPasswordHash);
+  if (!valid) {
     return errorResponse('Invalid password', 400);
   }
 

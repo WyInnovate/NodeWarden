@@ -1,4 +1,4 @@
-import { Env } from './types';
+import { Env, DEFAULT_DEV_SECRET } from './types';
 import { AuthService } from './services/auth';
 import { RateLimitService, getClientIdentifier } from './services/ratelimit';
 import { handleCors, errorResponse, jsonResponse } from './utils/response';
@@ -184,7 +184,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     // If JWT_SECRET is not safely configured, block any other endpoints.
     const secret = (env.JWT_SECRET || '').trim();
-    if (!secret || secret.length < 32) {
+    if (!secret || secret.length < 32 || secret === DEFAULT_DEV_SECRET) {
       return errorResponse('Server configuration error: JWT_SECRET is not set or too weak', 500);
     }
 

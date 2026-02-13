@@ -68,10 +68,12 @@ export async function handleGetCiphers(request: Request, env: Env, userId: strin
     ? ciphers 
     : ciphers.filter(c => !c.deletedAt);
 
+  const attachmentsByCipher = await storage.getAttachmentsByCipherIds(filteredCiphers.map(c => c.id));
+
   // Get attachments for all ciphers
   const cipherResponses = [];
   for (const cipher of filteredCiphers) {
-    const attachments = await storage.getAttachmentsByCipher(cipher.id);
+    const attachments = attachmentsByCipher.get(cipher.id) || [];
     cipherResponses.push(cipherToResponse(cipher, attachments));
   }
 

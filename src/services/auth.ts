@@ -11,9 +11,15 @@ export class AuthService {
 
   // Verify password hash (compare with stored hash)
   async verifyPassword(inputHash: string, storedHash: string): Promise<boolean> {
-    // In Bitwarden, the client sends the password hash directly
-    // We compare the hashes
-    return inputHash === storedHash;
+    const input = new TextEncoder().encode(inputHash);
+    const stored = new TextEncoder().encode(storedHash);
+    if (input.length !== stored.length) return false;
+
+    let diff = 0;
+    for (let i = 0; i < input.length; i++) {
+      diff |= input[i] ^ stored[i];
+    }
+    return diff === 0;
   }
 
   // Generate access token

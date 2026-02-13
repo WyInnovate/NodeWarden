@@ -9,6 +9,17 @@ import { User, Cipher, Folder, Attachment } from '../types';
 export class StorageService {
   constructor(private db: D1Database) {}
 
+  private async sha256Hex(input: string): Promise<string> {
+    const bytes = new TextEncoder().encode(input);
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  private async refreshTokenKey(token: string): Promise<string> {
+    const digest = await this.sha256Hex(token);
+    return `sha256:${digest}`;
+  }
+
   // --- Database initialization ---
   // Idempotent auto-init for environments where D1 migrations have not been applied
   // (e.g. one-click deploy). Mirrors the schema in migrations/0001_init.sql —
@@ -245,6 +256,35 @@ CREATE INDEX IF NOT EXISTS idx_api_rate_window ON api_rate_limits(window_start);
       .run();
   }
 
+  async createFirstUser(user: User): Promise<boolean> {
+    const email = user.email.toLowerCase();
+    const result = await this.db
+      .prepare(
+        'INSERT INTO users(id, email, name, master_password_hash, key, private_key, public_key, kdf_type, kdf_iterations, kdf_memory, kdf_parallelism, security_stamp, created_at, updated_at) ' +
+        'SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? ' +
+        'WHERE NOT EXISTS (SELECT 1 FROM users LIMIT 1)'
+      )
+      .bind(
+        user.id,
+        email,
+        user.name,
+        user.masterPasswordHash,
+        user.key,
+        user.privateKey,
+        user.publicKey,
+        user.kdfType,
+        user.kdfIterations,
+        user.kdfMemory ?? null,
+        user.kdfParallelism ?? null,
+        user.securityStamp,
+        user.createdAt,
+        user.updatedAt
+      )
+      .run();
+
+    return (result.meta.changes ?? 0) > 0;
+  }
+
   // --- Ciphers ---
 
   async getCipher(id: string): Promise<Cipher | null> {
@@ -412,6 +452,36 @@ CREATE INDEX IF NOT EXISTS idx_api_rate_window ON api_rate_limits(window_start);
     }));
   }
 
+  async getAttachmentsByCipherIds(cipherIds: string[]): Promise<Map<string, Attachment[]>> {
+    const grouped = new Map<string, Attachment[]>();
+    if (cipherIds.length === 0) return grouped;
+
+    const placeholders = cipherIds.map(() => '?').join(',');
+    const res = await this.db
+      .prepare(`SELECT id, cipher_id, file_name, size, size_name, key FROM attachments WHERE cipher_id IN (${placeholders})`)
+      .bind(...cipherIds)
+      .all<any>();
+
+    for (const row of (res.results || [])) {
+      const item: Attachment = {
+        id: row.id,
+        cipherId: row.cipher_id,
+        fileName: row.file_name,
+        size: row.size,
+        sizeName: row.size_name,
+        key: row.key,
+      };
+      const list = grouped.get(item.cipherId);
+      if (list) {
+        list.push(item);
+      } else {
+        grouped.set(item.cipherId, [item]);
+      }
+    }
+
+    return grouped;
+  }
+
   async addAttachmentToCipher(cipherId: string, attachmentId: string): Promise<void> {
     // Kept for API compatibility; no-op because attachments table already links cipher_id.
     // We still validate that the attachment exists and belongs to cipher.
@@ -441,19 +511,38 @@ CREATE INDEX IF NOT EXISTS idx_api_rate_window ON api_rate_limits(window_start);
 
   async saveRefreshToken(token: string, userId: string, expiresAtMs?: number): Promise<void> {
     const expiresAt = expiresAtMs ?? (Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const tokenKey = await this.refreshTokenKey(token);
     await this.db.prepare(
       'INSERT INTO refresh_tokens(token, user_id, expires_at) VALUES(?, ?, ?) ' +
       'ON CONFLICT(token) DO UPDATE SET user_id=excluded.user_id, expires_at=excluded.expires_at'
     )
-      .bind(token, userId, expiresAt)
+      .bind(tokenKey, userId, expiresAt)
       .run();
   }
 
   async getRefreshTokenUserId(token: string): Promise<string | null> {
     const now = Date.now();
-    const row = await this.db.prepare('SELECT user_id, expires_at FROM refresh_tokens WHERE token = ?')
-      .bind(token)
+    const tokenKey = await this.refreshTokenKey(token);
+
+    let row = await this.db.prepare('SELECT user_id, expires_at FROM refresh_tokens WHERE token = ?')
+      .bind(tokenKey)
       .first<{ user_id: string; expires_at: number }>();
+
+    if (!row) {
+      const legacyRow = await this.db.prepare('SELECT user_id, expires_at FROM refresh_tokens WHERE token = ?')
+        .bind(token)
+        .first<{ user_id: string; expires_at: number }>();
+
+      if (legacyRow) {
+        if (legacyRow.expires_at && legacyRow.expires_at < now) {
+          await this.deleteRefreshToken(token);
+          return null;
+        }
+        await this.saveRefreshToken(token, legacyRow.user_id, legacyRow.expires_at);
+        await this.db.prepare('DELETE FROM refresh_tokens WHERE token = ?').bind(token).run();
+        return legacyRow.user_id;
+      }
+    }
 
     if (!row) return null;
     if (row.expires_at && row.expires_at < now) {
@@ -464,7 +553,9 @@ CREATE INDEX IF NOT EXISTS idx_api_rate_window ON api_rate_limits(window_start);
   }
 
   async deleteRefreshToken(token: string): Promise<void> {
+    const tokenKey = await this.refreshTokenKey(token);
     await this.db.prepare('DELETE FROM refresh_tokens WHERE token = ?').bind(token).run();
+    await this.db.prepare('DELETE FROM refresh_tokens WHERE token = ?').bind(tokenKey).run();
   }
 
   // --- Revision dates ---

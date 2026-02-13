@@ -32,12 +32,7 @@ export async function handleToken(request: Request, env: Env): Promise<Response>
       return identityErrorResponse('Email and password are required', 'invalid_request', 400);
     }
 
-    const user = await storage.getUser(email);
-    if (!user) {
-      return identityErrorResponse('Username or password is incorrect. Try again', 'invalid_grant', 400);
-    }
-
-    // Check if login is rate limited (only after confirming user exists)
+    // Check login lockout before user lookup to reduce user-enumeration signal
     const loginCheck = await rateLimit.checkLoginAttempt(email);
     if (!loginCheck.allowed) {
       return identityErrorResponse(
@@ -45,6 +40,12 @@ export async function handleToken(request: Request, env: Env): Promise<Response>
         'TooManyRequests',
         429
       );
+    }
+
+    const user = await storage.getUser(email);
+    if (!user) {
+      await rateLimit.recordFailedLogin(email);
+      return identityErrorResponse('Username or password is incorrect. Try again', 'invalid_grant', 400);
     }
 
     const valid = await auth.verifyPassword(passwordHash, user.masterPasswordHash);

@@ -1,4 +1,4 @@
-import { Env, Attachment } from '../types';
+import { Env, Attachment, DEFAULT_DEV_SECRET } from '../types';
 import { StorageService } from '../services/storage';
 import { jsonResponse, errorResponse } from '../utils/response';
 import { generateUUID } from '../utils/uuid';
@@ -210,6 +210,11 @@ export async function handlePublicDownloadAttachment(
   cipherId: string,
   attachmentId: string
 ): Promise<Response> {
+  const secret = (env.JWT_SECRET || '').trim();
+  if (!secret || secret.length < 32 || secret === DEFAULT_DEV_SECRET) {
+    return errorResponse('Server configuration error', 500);
+  }
+
   const url = new URL(request.url);
   const token = url.searchParams.get('token');
 

@@ -14,6 +14,7 @@ export async function handleSync(request: Request, env: Env, userId: string): Pr
 
   const ciphers = await storage.getAllCiphers(userId);
   const folders = await storage.getAllFolders(userId);
+  const attachmentsByCipher = await storage.getAttachmentsByCipherIds(ciphers.map(c => c.id));
 
   // Build profile response
   const profile: ProfileResponse = {
@@ -43,7 +44,7 @@ export async function handleSync(request: Request, env: Env, userId: string): Pr
   // Build cipher responses with attachments
   const cipherResponses: CipherResponse[] = [];
   for (const cipher of ciphers) {
-    const attachments = await storage.getAttachmentsByCipher(cipher.id);
+    const attachments = attachmentsByCipher.get(cipher.id) || [];
     cipherResponses.push(cipherToResponse(cipher, attachments));
   }
 
